@@ -1,0 +1,128 @@
+---
+# Playbook: Monte Carlo Insurance Risk Simulation Environment Setup
+# Description: Automates the deployment of a Jupyter notebook environment for insurance risk simulations
+- name: Setup Monte Carlo Insurance Risk Simulation Environment
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  
+  vars:
+    app_namespace: insurance-risk
+    app_name: risk-analytics
+    jupyter_image: quay.io/jupyter/datascience-notebook:latest
+    memory_request: 1Gi
+    memory_limit: 2Gi
+    cpu_request: 500m
+    cpu_limit: '1'
+
+  tasks:
+    - name: Create namespace if it doesn't exist
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ app_namespace }}"
+
+    - name: Create the Jupyter deployment
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: "{{ app_name }}"
+            namespace: "{{ app_namespace }}"
+            labels:
+              app: "{{ app_name }}"
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: "{{ app_name }}"
+            template:
+              metadata:
+                labels:
+                  app: "{{ app_name }}"
+              spec:
+                volumes:
+                - name: notebook-data
+                  emptyDir: {}
+                containers:
+                - name: jupyter
+                  image: "{{ jupyter_image }}"
+                  command: ["start-notebook.sh"]
+                  args: ["--ip=0.0.0.0", "--no-browser", "--NotebookApp.token=''", "--NotebookApp.password=''"]
+                  ports:
+                  - containerPort: 8888
+                    protocol: TCP
+                  env:
+                  - name: HOME
+                    value: /home/jovyan
+                  - name: JUPYTER_ENABLE_LAB
+                    value: "yes"
+                  resources:
+                    requests:
+                      memory: "{{ memory_request }}"
+                      cpu: "{{ cpu_request }}"
+                    limits:
+                      memory: "{{ memory_limit }}"
+                      cpu: "{{ cpu_limit }}"
+                  volumeMounts:
+                  - name: notebook-data
+                    mountPath: /home/jovyan
+
+    - name: Create service for Jupyter
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: "{{ app_name }}"
+            namespace: "{{ app_namespace }}"
+            labels:
+              app: "{{ app_name }}"
+          spec:
+            selector:
+              app: "{{ app_name }}"
+            ports:
+              - port: 8888
+                targetPort: 8888
+                protocol: TCP
+                name: http
+            type: ClusterIP
+
+    - name: Create route for Jupyter
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: route.openshift.io/v1
+          kind: Route
+          metadata:
+            name: "{{ app_name }}"
+            namespace: "{{ app_namespace }}"
+            labels:
+              app: "{{ app_name }}"
+          spec:
+            to:
+              kind: Service
+              name: "{{ app_name }}"
+            port:
+              targetPort: http
+            tls:
+              termination: edge
+              insecureEdgeTerminationPolicy: Redirect
+
+    - name: Get route information
+      kubernetes.core.k8s_info:
+        api_version: route.openshift.io/v1
+        kind: Route
+        name: "{{ app_name }}"
+        namespace: "{{ app_namespace }}"
+      register: route_info
+
+    - name: Display route URL
+      debug:
+        msg: "The Jupyter Notebook is available at https://{{ route_info.resources[0].spec.host }}"

@@ -1,0 +1,386 @@
+---
+# Insurance Risk Analytics OpenShift Deployment Playbook
+# Author: Claude AI Assistant
+# Description: This playbook deploys a Jupyter notebook environment for 
+#              insurance risk simulations in an OpenShift environment.
+
+- name: Deploy Insurance Risk Analytics Environment
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  
+  vars:
+    namespace: insurance-risk
+    app_name: risk-analytics
+    jupyter_image: quay.io/jupyter/datascience-notebook:latest
+    memory_request: 1Gi
+    memory_limit: 2Gi
+    cpu_request: 500m
+    cpu_limit: '1'
+
+  tasks:
+    - name: Ensure OpenShift CLI (oc) is available
+      command: oc version
+      register: oc_version
+      ignore_errors: true
+      changed_when: false
+      
+    - name: Verify OpenShift CLI is installed
+      fail:
+        msg: "OpenShift CLI (oc) is not installed or not in your PATH. Please install it first."
+      when: oc_version.rc != 0
+      
+    - name: Verify OpenShift login status
+      command: oc whoami
+      register: oc_whoami
+      ignore_errors: true
+      changed_when: false
+      
+    - name: Check if logged into OpenShift
+      fail:
+        msg: "Not logged into OpenShift. Please run 'oc login' first."
+      when: oc_whoami.rc != 0
+      
+    - name: Check if namespace exists
+      command: "oc get namespace {{ namespace }}"
+      register: namespace_exists
+      ignore_errors: true
+      changed_when: false
+      
+    - name: Create namespace if it doesn't exist
+      command: "oc create namespace {{ namespace }}"
+      when: namespace_exists.rc != 0
+      
+    - name: Set current project
+      command: "oc project {{ namespace }}"
+      changed_when: false
+      
+    - name: Create deployment YAML file
+      copy:
+        dest: "/tmp/risk-analytics-deployment.yaml"
+        content: |
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: {{ app_name }}
+            namespace: {{ namespace }}
+            labels:
+              app: {{ app_name }}
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: {{ app_name }}
+            template:
+              metadata:
+                labels:
+                  app: {{ app_name }}
+              spec:
+                volumes:
+                - name: notebook-data
+                  emptyDir: {}
+                containers:
+                - name: jupyter
+                  image: {{ jupyter_image }}
+                  command: ["start-notebook.sh"]
+                  args: ["--ip=0.0.0.0", "--no-browser", "--NotebookApp.token=''", "--NotebookApp.password=''"]
+                  ports:
+                  - containerPort: 8888
+                    protocol: TCP
+                  env:
+                  - name: HOME
+                    value: /home/jovyan
+                  - name: JUPYTER_ENABLE_LAB
+                    value: "yes"
+                  resources:
+                    requests:
+                      memory: {{ memory_request }}
+                      cpu: {{ cpu_request }}
+                    limits:
+                      memory: {{ memory_limit }}
+                      cpu: {{ cpu_limit }}
+                  volumeMounts:
+                  - name: notebook-data
+                    mountPath: /home/jovyan
+      
+    - name: Create service YAML file
+      copy:
+        dest: "/tmp/risk-analytics-service.yaml"
+        content: |
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: {{ app_name }}
+            namespace: {{ namespace }}
+            labels:
+              app: {{ app_name }}
+          spec:
+            ports:
+            - port: 8888
+              targetPort: 8888
+              protocol: TCP
+              name: http
+            selector:
+              app: {{ app_name }}
+            type: ClusterIP
+            
+    - name: Create route YAML file
+      copy:
+        dest: "/tmp/risk-analytics-route.yaml"
+        content: |
+          apiVersion: route.openshift.io/v1
+          kind: Route
+          metadata:
+            name: {{ app_name }}
+            namespace: {{ namespace }}
+            labels:
+              app: {{ app_name }}
+          spec:
+            to:
+              kind: Service
+              name: {{ app_name }}
+              weight: 100
+            port:
+              targetPort: http
+            tls:
+              termination: edge
+              insecureEdgeTerminationPolicy: Redirect
+              
+    - name: Apply deployment
+      command: "oc apply -f /tmp/risk-analytics-deployment.yaml"
+      register: deploy_result
+      
+    - name: Apply service
+      command: "oc apply -f /tmp/risk-analytics-service.yaml"
+      register: service_result
+      
+    - name: Apply route
+      command: "oc apply -f /tmp/risk-analytics-route.yaml"
+      register: route_result
+      
+    - name: Clean up temporary files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/tmp/risk-analytics-deployment.yaml"
+        - "/tmp/risk-analytics-service.yaml"
+        - "/tmp/risk-analytics-route.yaml"
+      
+    - name: Get route URL
+      command: "oc get route {{ app_name }} -n {{ namespace }} -o jsonpath='{.spec.host}'"
+      register: route_url
+      changed_when: false
+      
+    - name: Wait for deployment to be ready
+      command: "oc rollout status deployment/{{ app_name }} -n {{ namespace }}"
+      changed_when: false
+      
+    - name: Display access information
+      debug:
+        msg: 
+          - "Insurance Risk Analytics Environment deployed successfully!"
+          - "Access the Jupyter notebook at: https://{{ route_url.stdout }}"
+          - "No password is required to log in."
+          
+    - name: Create Python simulation file
+      copy:
+        dest: "/tmp/insurance_simulation.py"
+        content: |
+          # Property Catastrophe Insurance Risk Simulation
+          # ---------------------------------------------
+          # This simulation models a property insurance portfolio's exposure to catastrophic events
+          # like hurricanes, earthquakes, and floods, analyzing potential losses and capital requirements.
+
+          import numpy as np
+          import pandas as pd
+          import matplotlib.pyplot as plt
+          import seaborn as sns
+          from scipy import stats
+
+          # Set random seed for reproducibility
+          np.random.seed(42)
+
+          # Define portfolio parameters
+          num_policies = 5000        # Number of insurance policies
+          avg_property_value = 350000  # Average property value ($)
+          premium_rate = 0.005       # Annual premium as percentage of property value
+          expense_ratio = 0.25       # Expense ratio (25% of premium goes to expenses)
+          capital_reserves = 50e6    # Initial capital reserves ($50M)
+          simulation_years = 10      # Time horizon
+          num_simulations = 1000     # Number of simulation runs
+
+          # Catastrophe event parameters
+          # 1. Hurricane 
+          hurricane_annual_freq = 0.15  # Annual probability of a hurricane affecting the portfolio
+          hurricane_severity_mean = 0.1  # Mean damage as proportion of property value
+          hurricane_severity_shape = 2.0  # Shape parameter for gamma distribution
+
+          # 2. Earthquake
+          earthquake_annual_freq = 0.05  # Annual probability of an earthquake affecting the portfolio
+          earthquake_severity_mean = 0.2  # Mean damage as proportion of property value
+          earthquake_severity_shape = 1.5  # Shape parameter for gamma distribution
+
+          # 3. Flood
+          flood_annual_freq = 0.2   # Annual probability of a flood affecting the portfolio
+          flood_severity_mean = 0.05  # Mean damage as proportion of property value
+          flood_severity_shape = 3.0  # Shape parameter for gamma distribution
+
+          # Attritional (non-catastrophe) loss parameters
+          attritional_freq = 0.03    # Annual claim frequency per policy
+          attritional_severity_mean = 0.01  # Mean damage as proportion of property value
+          attritional_severity_cv = 0.5     # Coefficient of variation for severity
+
+          # Calculate policy values using lognormal distribution
+          property_values = np.random.lognormal(
+              mean=np.log(avg_property_value) - 0.25,  # Adjust for skewness
+              sigma=0.5,  # Coefficient of variation
+              size=num_policies
+          )
+
+          # Policy limit is capped at property value (no over-insurance)
+          policy_limits = property_values.copy()
+
+          # Calculate annual premium income
+          premium_income = np.sum(policy_limits * premium_rate)
+          annual_expenses = premium_income * expense_ratio
+          net_premium_income = premium_income - annual_expenses
+
+          # Initialize arrays for results
+          portfolio_results = np.zeros((num_simulations, simulation_years + 1))
+          portfolio_results[:, 0] = capital_reserves  # Initial capital
+          yearly_cat_losses = np.zeros((num_simulations, simulation_years))
+          yearly_attritional_losses = np.zeros((num_simulations, simulation_years))
+          yearly_total_losses = np.zeros((num_simulations, simulation_years))
+
+          # Helper function to simulate catastrophe events
+          def simulate_catastrophe(annual_freq, severity_mean, severity_shape, affected_policies):
+              # Determine if catastrophe occurs this year
+              if np.random.random() < annual_freq:
+                  # Determine affected properties (spatial correlation)
+                  affected_pct = np.random.beta(2, 5) * 0.8 + 0.1  # Between 10% and 90%
+                  num_affected = int(affected_policies * affected_pct)
+                  
+                  # Sample properties that are affected
+                  affected_indices = np.random.choice(affected_policies, num_affected, replace=False)
+                  
+                  # Generate damage ratios for affected properties using Gamma distribution
+                  # Scale parameter = mean / shape
+                  scale = severity_mean / severity_shape
+                  damage_ratios = np.random.gamma(severity_shape, scale, num_affected)
+                  damage_ratios = np.minimum(damage_ratios, 1.0)  # Cap damage ratio at 1.0 (total loss)
+                  
+                  # Calculate losses for affected properties
+                  affected_limits = policy_limits[affected_indices]
+                  losses = affected_limits * damage_ratios
+                  
+                  return np.sum(losses)
+              else:
+                  return 0
+
+          # Run Monte Carlo simulation
+          for sim in range(num_simulations):
+              for year in range(1, simulation_years + 1):
+                  # Simulate hurricane losses
+                  hurricane_loss = simulate_catastrophe(
+                      hurricane_annual_freq, 
+                      hurricane_severity_mean, 
+                      hurricane_severity_shape, 
+                      num_policies
+                  )
+                  
+                  # Simulate earthquake losses
+                  earthquake_loss = simulate_catastrophe(
+                      earthquake_annual_freq, 
+                      earthquake_severity_mean, 
+                      earthquake_severity_shape, 
+                      num_policies
+                  )
+                  
+                  # Simulate flood losses
+                  flood_loss = simulate_catastrophe(
+                      flood_annual_freq, 
+                      flood_severity_mean, 
+                      flood_severity_shape, 
+                      num_policies
+                  )
+                  
+                  # Calculate total catastrophe losses
+                  cat_losses = hurricane_loss + earthquake_loss + flood_loss
+                  yearly_cat_losses[sim, year-1] = cat_losses
+                  
+                  # Simulate attritional (non-catastrophe) losses
+                  num_attritional_claims = np.random.poisson(attritional_freq * num_policies)
+                  
+                  if num_attritional_claims > 0:
+                      # Generate claim severities
+                      attritional_severity_scale = attritional_severity_mean / (1 + attritional_severity_cv**2)
+                      attritional_severity_shape = 1 / attritional_severity_cv**2
+                      
+                      claim_severities = np.random.gamma(
+                          attritional_severity_shape, 
+                          attritional_severity_scale, 
+                          num_attritional_claims
+                      )
+                      
+                      # Sample affected policies
+                      affected_policies = np.random.choice(num_policies, num_attritional_claims, replace=True)
+                      claim_amounts = policy_limits[affected_policies] * claim_severities
+                      attritional_losses = np.sum(claim_amounts)
+                  else:
+                      attritional_losses = 0
+                  
+                  yearly_attritional_losses[sim, year-1] = attritional_losses
+                  
+                  # Calculate total losses
+                  total_losses = cat_losses + attritional_losses
+                  yearly_total_losses[sim, year-1] = total_losses
+                  
+                  # Update capital reserves
+                  net_income = net_premium_income - total_losses
+                  portfolio_results[sim, year] = portfolio_results[sim, year-1] + net_income
+
+          # Create a time index for the simulation years
+          years = np.arange(simulation_years + 1)
+
+          # Visualization 1: Sample of capital reserve paths
+          plt.figure(figsize=(12, 8))
+          for i in range(50):  # Plot first 50 simulations for clarity
+              plt.plot(years, portfolio_results[i], linewidth=0.8, alpha=0.6)
+              
+          plt.title('Monte Carlo Simulation: Capital Reserve Paths', fontsize=16)
+          plt.xlabel('Years', fontsize=14)
+          plt.ylabel('Capital Reserves ($)', fontsize=14)
+          plt.axhline(y=capital_reserves, color='r', linestyle='--', 
+                      label=f'Initial Capital (${capital_reserves/1e6:.1f}M)')
+          plt.grid(True, alpha=0.3)
+          plt.legend()
+          plt.show()
+      
+    - name: Upload simulation file to the pod
+      shell: |
+        POD_NAME=$(oc get pods -n {{ namespace }} -l app={{ app_name }} -o jsonpath='{.items[0].metadata.name}')
+        if [ -n "$POD_NAME" ]; then
+          oc cp /tmp/insurance_simulation.py {{ namespace }}/$POD_NAME:/home/jovyan/insurance_simulation.py
+          echo "Simulation file has been uploaded to the pod"
+        else
+          echo "Pod not found"
+          exit 1
+        fi
+      register: upload_result
+      changed_when: "'Simulation file has been uploaded to the pod' in upload_result.stdout"
+      
+    - name: Clean up simulation file
+      file:
+        path: "/tmp/insurance_simulation.py"
+        state: absent
+        
+    - name: Final instructions
+      debug:
+        msg:
+          - "Insurance Risk Analytics Environment is ready!"
+          - "Access your JupyterLab at: https://{{ route_url.stdout }}"
+          - "A preconfigured insurance simulation has been uploaded to your environment."
+          - "Open the file 'insurance_simulation.py' in JupyterLab to start working with it."
+          - "You may need to install required libraries if they're not already present:"
+          - "!pip install numpy pandas matplotlib seaborn scipy"
